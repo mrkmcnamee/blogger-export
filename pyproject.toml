@@ -5,6 +5,7 @@ description = ""
 authors = [
     {name = "Kevin McNamee",email = "46104536+mrkmcnamee@users.noreply.github.com"}
 ]
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -12,3 +13,6 @@ dependencies = [
     "google-auth~=2.40.0",
     "google_auth_oauthlib~=1.2.0",
 ]
+
+[tool.flake8]
+ignore = "E501"

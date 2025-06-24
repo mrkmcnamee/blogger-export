@@ -1,6 +1,5 @@
 client_secret.json
 token.json
-data/
-output/
+blogs/
 .venv/
 .vscode/

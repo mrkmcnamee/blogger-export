@@ -1,4 +1,5 @@
 import argparse
+from datetime import datetime, timezone
 import logging
 import os
 import shutil
@@ -12,32 +13,22 @@ from googleapiclient.discovery import build
 import requests
 
 
-TESTING = True  # Set to True for testing mode
-POST_LIMIT = None
+POST_EXPORT_TEST_LIMIT = 10
 SCOPES = ["https://www.googleapis.com/auth/blogger"]
 
 handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-))
+handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logger = logging.getLogger(__name__)
 logger.addHandler(handler)
 logger.propagate = False
-
-if TESTING:
-    logger.setLevel(logging.DEBUG)
-    logger.debug("Running in testing mode.")
-    POST_LIMIT = 10
 
 
 def get_credentials() -> Credentials:
     """
     Retrieves OAuth2 credentials for accessing the Blogger API.
-    If the credentials are not found or are invalid, it prompts the user to
-    log in.
+    If the credentials are not found or are invalid, it prompts the user to log in.
     The file `token.json` stores the user's access and refresh tokens, and
-    is created automatically when the authorization flow completes for the
-    first time.
+    is created automatically when the authorization flow completes for the first time.
 
     Returns:
         Credentials: The OAuth2 credentials.
@@ -64,6 +55,23 @@ def get_credentials() -> Credentials:
                 token.write(credentials.to_json())
 
     return credentials
+
+
+def get_blogger_blog(blog_id: str, credentials: Credentials) -> Dict:
+    """
+    Fetches a Blogger blog by its ID using the Blogger API.
+
+    Args:
+        blog_id (str): The ID of the Blogger blog.
+        credentials (Credentials): The OAuth2 credentials to access the API.
+
+    Returns:
+        dict: A dictionary representing the Blogger blog.
+    """
+    service = build('blogger', 'v3', credentials=credentials)
+    blog = service.blogs().get(blogId=blog_id).execute()
+
+    return blog
 
 
 def get_blogger_posts(
@@ -105,27 +113,40 @@ def get_blogger_posts(
 
 class ContentHTMLParser(HTMLParser):
     """
-    Download images and replace URLs with local paths.
+    Download the HTML and images and replace URLs with local paths.
     """
     def __init__(self, output_dir: str, post_id: str):
         super().__init__()
         self.output_dir = output_dir
         self.post_id = post_id
+        self.image_index = 0
         self.data = ""
 
     def handle_starttag(self, tag, attrs):
         self.data += f'<{tag}'
         for attr, value in attrs:
             if value.startswith("https://blogger.googleusercontent.com"):
-                self.data += f' {attr}="{self._handle_user_content(value)}"'
+                if attr == 'href':
+                    self.image_index += 1
+                    self.data += f' {attr}="{self._handle_user_content(value, "full", self.image_index)}"'
+                elif attr == 'src':
+                    self.data += f' {attr}="{self._handle_user_content(value, "thumbnail", self.image_index)}"'
             else:
                 self.data += f' {attr}="{value}"'
 
         self.data += '>'
 
-    def _handle_user_content(self, value: str) -> str:
-        image_index = len(os.listdir(self.output_dir)) + 1 or 1
-        filename = f"{self.post_id}-{image_index}.jpg"
+    def _handle_user_content(self, value: str, image_type: str, image_index: int) -> str:
+        """
+        Handles the user content by downloading the image and returning the local filename.
+        Args:
+            value (str): The URL of the image.
+            image_type (str): The type of image (e.g., "thumbnail", "full").
+            image_index (int): The index of the image in the post.
+        Returns:
+            str: The local filename where the image is saved.
+        """
+        filename = f"{self.post_id}_{image_type}_{image_index}.jpg"
         local_path = os.path.join(self.output_dir, filename)
 
         url = value if value.startswith("http") else "https:" + value
@@ -172,11 +193,11 @@ def convert_post_to_html(output_dir: str, post: Dict) -> str:
         post (dict): A dictionary representing a Blogger post.
 
     Returns:
-        str: The HTML representation of the post.
+        str: The path to the generated HTML file.
     """
     id = post.get('id')
     title = post.get('title', 'No Title')
-    published = post.get('published', 'Unknown Date')
+    published = to_utc_str(post.get('published', 'Unknown Date'))
     author = post.get('author', {}).get('displayName', 'Unknown Author')
     content = post.get('content', 'No Content')
 
@@ -189,15 +210,22 @@ def convert_post_to_html(output_dir: str, post: Dict) -> str:
     content = content_parser.data
 
     html_output = f"""
-<article>
-  <h1>{title}</h1>
-  <div><strong>Published:</strong> {published}</div>
-  <div><strong>Author:</strong> {author}</div>
-  <div>{content}</div>
-</article>
-<p>
-  <a href="../index.html">Back to index</a>
-</p>
+<html>
+  <head>
+    <title>{title}</title>
+  </head>
+  <body>
+    </article>
+      <h1>{title}</h1>
+      <div><strong>Published:</strong> {published}</div>
+      <div><strong>Author:</strong> {author}</div>
+      <div>{content}</div>
+    </article>
+    <p>
+      <a href="../index.html">Back to index</a>
+    </p>
+  </body>
+</html>
 """
 
     filename = os.path.join(post_output_dir, f"{id}.html")
@@ -206,47 +234,94 @@ def convert_post_to_html(output_dir: str, post: Dict) -> str:
 
     logger.info(f"Converted post {id} to HTML: {filename}")
 
+    return filename
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Export Blogger posts to HTML.")
-    parser.add_argument("blog_id", help="The Blogger blog ID to export")
-    args = parser.parse_args()
 
-    BLOG_ID = args.blog_id
+def to_utc_str(dt_str: str) -> str:
+    """
+    Converts a datetime string to UTC format.
+    Args:
+        dt_str (str): The datetime string in ISO format.
+    Returns:
+        str: The datetime string in UTC format.
+    """
+    try:
+        dt = datetime.fromisoformat(dt_str)
+        dt_utc = dt.astimezone(timezone.utc)
 
-    credentials = get_credentials()
+        return dt_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except ValueError:
+        return None
 
-    posts = get_blogger_posts(BLOG_ID, credentials, limit=POST_LIMIT)
-    logger.info(f"Retrieved {len(posts)} posts from blog ID {BLOG_ID}.")
 
-    output_dir = os.path.join("output", BLOG_ID)
-    shutil.rmtree(output_dir, ignore_errors=True)
-    os.makedirs(output_dir, exist_ok=True)
+def create_index_html(output_dir: str, blog: Dict, posts: List) -> str:
+    """
+    Creates an index HTML file listing all posts.
 
-    # Create index.html file
-    index_html = """
+    Args:
+        output_dir (str): The directory where the index file will be saved.
+        blog (dict): A dictionary representing the Blogger blog.
+        posts (list): A list of Blogger posts.
+    Returns:
+        str: The path to the generated index HTML file.
+    """
+    index_html = f"""
 <html>
   <head>
-    <title>Blogger Posts</title>
+    <title>{blog['name']}</title>
   </head>
   <body>
-    <h1>Blogger Posts</h1>
+    <h1>{blog['name']}</h1>
+    <p>Retrieved on: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
     <ul>
 """
+
     for i, post in enumerate(posts):
-        index_html += f'<li><a href="{post["id"]}/{post["id"]}.html">{post["title"]}</a></li>'
+        index_html += f'      <li><a href="{post["id"]}/{post["id"]}.html">{post["title"]}</a></li>\n'
 
     index_html += """
     </ul>
   </body>
 </html>
 """
-    logger.info(f"Created index.html with {len(posts)} posts.")
+    logger.info("Created index.html.")
 
-    with open(os.path.join(output_dir, "index.html"), "w", encoding="utf-8") as index_file:
+    filename = os.path.join(output_dir, "index.html")
+    with open(filename, "w", encoding="utf-8") as index_file:
         index_file.write(index_html)
+
+    return filename
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Export Blogger posts to HTML.")
+    parser.add_argument("blog_id", help="The Blogger blog ID to export")
+    parser.add_argument("--full", help="Export all posts in the blog")
+    args = parser.parse_args()
+
+    BLOG_ID = args.blog_id
+    FULL_EXPORT = args.full
+
+    if not FULL_EXPORT:
+        logger.setLevel(logging.DEBUG)
+        logger.debug(f"Running in testing mode, limiting to {POST_EXPORT_TEST_LIMIT} posts.")
+
+    credentials = get_credentials()
+
+    blog = get_blogger_blog(BLOG_ID, credentials)
+    logger.info(f"Processing blog: {blog['name']} (ID: {blog['id']})")
+
+    posts = get_blogger_posts(BLOG_ID, credentials, limit=POST_EXPORT_TEST_LIMIT if not FULL_EXPORT else None)
+    logger.info(f"Retrieved {len(posts)} posts.")
+
+    output_dir = os.path.join("blogs", BLOG_ID)
+    shutil.rmtree(output_dir, ignore_errors=True)
+    os.makedirs(output_dir, exist_ok=True)
+
+    create_index_html(output_dir, blog, posts)
 
     for i, post in enumerate(posts):
         convert_post_to_html(output_dir, post)
 
     logger.info("Conversion completed successfully.")
+    logger.info(f"Open the {output_dir}\\index.html file to view the exported posts.")
