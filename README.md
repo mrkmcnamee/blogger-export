@@ -64,3 +64,14 @@ navigated in a browser. Images are downloaded as well. Includes a test mode and 
 ## Multiple blogs
 
 Repeat the process for each Blogger blog. They are each stored in a separate directory so will not overwrite each other when running.
+
+## Troubleshooting
+
+If a post export is failing for some reason, try exporting it individually.
+
+  ```shell
+  python .\blogger-export.py <Blog ID> --post <Post ID>
+  ```
+
+This will write the results to `blogs_<Post_ID>\<Blog ID>\`
+This will also save the original post content as `blog_source.html`.

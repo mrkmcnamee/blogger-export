@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 from html.parser import HTMLParser
+import sys
 from typing import Dict, List
 
 from google.auth.transport.requests import Request
@@ -13,7 +14,6 @@ from googleapiclient.discovery import build
 import requests
 
 
-BASE_OUTPUT_DIR = "blogs"
 POST_EXPORT_TEST_LIMIT = 10
 SCOPES = ["https://www.googleapis.com/auth/blogger"]
 
@@ -79,14 +79,17 @@ def get_blogger_blog(blog_id: str, credentials: Credentials) -> Dict:
 def get_blogger_posts(
         blog_id: str,
         credentials: Credentials,
-        limit: int = None
+        limit: int = None,
+        specific_post: str = None
         ) -> List:
     """
-    Fetches all posts from a Blogger blog using the Blogger API.
+    Fetches all posts or a specific post from a Blogger blog using the Blogger API.
 
     Args:
         blog_id (str): The ID of the Blogger blog.
         credentials (Credentials): The OAuth2 credentials to access the API.
+        limit (int, optional): The maximum number of posts to fetch. Defaults to None.
+        specific_post (str, optional): The ID of a specific post to fetch. Defaults to None.
 
     Returns:
         list: A list of posts from the blog.
@@ -94,6 +97,11 @@ def get_blogger_posts(
     service = build('blogger', 'v3', credentials=credentials)
     posts = []
     page_token = None
+
+    if specific_post:
+        logger.info(f"Fetching specific post: {specific_post}")
+        post = service.posts().get(blogId=blog_id, postId=specific_post).execute()
+        return [post]
 
     while True:
         response = service.posts().list(
@@ -166,6 +174,18 @@ class ContentHTMLParser(HTMLParser):
         self.data += data
 
 
+class ImgSrcExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.source_urls = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "img":
+            for attr, value in attrs:
+                if attr == "src":
+                    self.source_urls.append(value)
+
+
 def download_image(url: str, local_path: str, credentials: Credentials) -> None:
     """
     Downloads an image from a URL and saves it to a local path.
@@ -182,17 +202,29 @@ def download_image(url: str, local_path: str, credentials: Credentials) -> None:
     response = requests.get(url, headers=headers)
     response.raise_for_status()
 
-    with open(local_path, "wb") as file:
-        file.write(response.content)
+    if 'text/html' in response.headers.get('Content-Type', ''):
+        logger.info("  Expected an image but received HTML content.")
+        parser = ImgSrcExtractor()
+        parser.feed(response.content.decode('utf-8'))
+
+        if len(parser.source_urls) > 0:
+            download_image(parser.source_urls[0], local_path, credentials)
+            logger.info("  Extracted image from HTML content.")
+        else:
+            logger.warning("  No image found in HTML content, skipping.")
+    else:
+        with open(local_path, "wb") as file:
+            file.write(response.content)
 
 
-def convert_post_to_html(output_dir: str, navigation: Dict, post: Dict) -> str:
+def convert_post_to_html(output_dir: str, navigation: Dict, post: Dict, specific_post: str = None) -> str:
     """
     Converts a Blogger post to HTML format.
 
     Args:
         output_dir (str): The directory where the HTML file will be saved.
         post (dict): A dictionary representing a Blogger post.
+        specific_post (str, optional): The ID of a specific post to convert. Defaults to None.
 
     Returns:
         str: The path to the generated HTML file.
@@ -206,6 +238,7 @@ def convert_post_to_html(output_dir: str, navigation: Dict, post: Dict) -> str:
 
     post_output_dir = os.path.join(output_dir, id)
     html_filename = os.path.join(post_output_dir, f"{id}.html")
+    blog_filename = os.path.join(output_dir, "blog_source.html")
     semaphore = os.path.join(post_output_dir, "semaphore.txt")
 
     if os.path.exists(semaphore):
@@ -220,6 +253,11 @@ def convert_post_to_html(output_dir: str, navigation: Dict, post: Dict) -> str:
 
     with open(semaphore, "w", encoding="utf-8") as file:
         file.write("")
+
+    if specific_post:
+        logger.info("Saving source HTML for specific post.")
+        with open(blog_filename, "w", encoding="utf-8") as file:
+            file.write(content)
 
     # Download images and replace URLs with local paths
     content_parser = ContentHTMLParser(post_output_dir, id)
@@ -328,7 +366,7 @@ def create_index_html(output_dir: str, blog: Dict, posts: List) -> str:
     blog_name = blog.get("name", "Blogger Blog")
     blog_url = blog.get("url", "#")
     blog_post_count = blog["posts"]["totalItems"]
-    blog_export_count = len(posts) if FULL_EXPORT else POST_EXPORT_TEST_LIMIT
+    blog_export_count = len(posts)
     exported_on = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     index_html = f"""
@@ -369,6 +407,7 @@ def create_index_html(output_dir: str, blog: Dict, posts: List) -> str:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Export Blogger posts to HTML.")
     parser.add_argument("blog_id", help="The Blogger blog ID to export")
+    parser.add_argument("--post", help="Export a specific post by ID", default=None)
     parser.add_argument("--full", action="store_true",  help="Export all posts in the blog")
     parser.add_argument("--clean", action="store_true", help="Clean the output directory before export")
     args = parser.parse_args()
@@ -376,15 +415,26 @@ if __name__ == "__main__":
     BLOG_ID = args.blog_id
     FULL_EXPORT = args.full
     CLEAN_OUTPUT = args.clean
+    SPECIFIC_POST = args.post
 
-    if not FULL_EXPORT:
-        logger.setLevel(logging.DEBUG)
-        logger.debug(f"Running in testing mode, limiting to {POST_EXPORT_TEST_LIMIT} posts.")
-        BASE_OUTPUT_DIR = BASE_OUTPUT_DIR + "_test"
+    if FULL_EXPORT and SPECIFIC_POST:
+        logger.error("Cannot specify both --full and --post options.")
+        sys.exit(1)
+
+    if FULL_EXPORT:
+        base_output_dir = "blogs"
+    elif SPECIFIC_POST:
+        base_output_dir = f"blogs_{SPECIFIC_POST}"
+    else:
+        base_output_dir = "blogs_test"
 
     credentials = get_credentials()
 
-    output_dir = os.path.join(BASE_OUTPUT_DIR, BLOG_ID)
+    if not FULL_EXPORT:
+        logger.debug("Running in testing mode")
+        logger.setLevel(logging.DEBUG)
+
+    output_dir = os.path.join(base_output_dir, BLOG_ID)
     logger.info(f"Output directory: {output_dir}")
 
     if not FULL_EXPORT or CLEAN_OUTPUT:
@@ -402,14 +452,15 @@ if __name__ == "__main__":
     blog = get_blogger_blog(BLOG_ID, credentials)
     logger.info(f"Processing blog: {blog['name']} (ID: {blog['id']})")
 
-    posts = get_blogger_posts(BLOG_ID, credentials, limit=POST_EXPORT_TEST_LIMIT if not FULL_EXPORT else None)
+    limit = POST_EXPORT_TEST_LIMIT if not FULL_EXPORT else None
+    posts = get_blogger_posts(BLOG_ID, credentials, limit, SPECIFIC_POST)
     logger.info(f"Retrieved {len(posts)} posts.")
 
     index_html = create_index_html(output_dir, blog, posts)
     navigation = create_navigation_links(posts)
 
     for i, post in enumerate(posts):
-        convert_post_to_html(output_dir, navigation, post)
+        convert_post_to_html(output_dir, navigation, post, SPECIFIC_POST)
 
     logger.info("Conversion completed successfully.")
     logger.info(f"Log file: {log_file}")
