@@ -1,5 +1,6 @@
 client_secret.json
 token.json
 blogs/
+blogs_test/
 .venv/
 .vscode/

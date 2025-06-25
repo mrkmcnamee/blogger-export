@@ -13,6 +13,7 @@ from googleapiclient.discovery import build
 import requests
 
 
+BASE_OUTPUT_DIR = "blogs"
 POST_EXPORT_TEST_LIMIT = 10
 SCOPES = ["https://www.googleapis.com/auth/blogger"]
 
@@ -21,6 +22,7 @@ handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)
 logger = logging.getLogger(__name__)
 logger.addHandler(handler)
 logger.propagate = False
+logger.setLevel(logging.INFO)
 
 
 def get_credentials() -> Credentials:
@@ -184,7 +186,7 @@ def download_image(url: str, local_path: str, credentials: Credentials) -> None:
         file.write(response.content)
 
 
-def convert_post_to_html(output_dir: str, post: Dict) -> str:
+def convert_post_to_html(output_dir: str, navigation: Dict, post: Dict) -> str:
     """
     Converts a Blogger post to HTML format.
 
@@ -199,12 +201,27 @@ def convert_post_to_html(output_dir: str, post: Dict) -> str:
     title = post.get('title', 'No Title')
     published = to_utc_str(post.get('published', 'Unknown Date'))
     author = post.get('author', {}).get('displayName', 'Unknown Author')
+    url = post.get('url', '#')
     content = post.get('content', 'No Content')
 
     post_output_dir = os.path.join(output_dir, id)
-    os.makedirs(post_output_dir, exist_ok=True)
+    html_filename = os.path.join(post_output_dir, f"{id}.html")
+    semaphore = os.path.join(post_output_dir, "semaphore.txt")
 
-    # Download images and replace URLs with local paths if necessary
+    if os.path.exists(semaphore):
+        logger.warning("Incomplete post conversion detected, cleaning up.")
+        shutil.rmtree(post_output_dir, ignore_errors=True)
+
+    try:
+        os.makedirs(post_output_dir)
+    except FileExistsError:
+        logger.warning(f"Skipped post {id}: Directory already exists")
+        return html_filename
+
+    with open(semaphore, "w", encoding="utf-8") as file:
+        file.write("")
+
+    # Download images and replace URLs with local paths
     content_parser = ContentHTMLParser(post_output_dir, id)
     content_parser.feed(content)
     content = content_parser.data
@@ -222,19 +239,27 @@ def convert_post_to_html(output_dir: str, post: Dict) -> str:
       <div>{content}</div>
     </article>
     <p>
+      <a href="{navigation[id]['previous']}">Previous Post</a> |
+      <a href="{navigation[id]['next']}">Next Post</a>
+    </p>
+    <p>
       <a href="../index.html">Back to index</a>
+    </p>
+    <p>
+      <a href="{url}" target="_blank">View on Blogger</a>
     </p>
   </body>
 </html>
 """
 
-    filename = os.path.join(post_output_dir, f"{id}.html")
-    with open(filename, "w", encoding="utf-8") as file:
+    with open(html_filename, "w", encoding="utf-8") as file:
         file.write(html_output)
 
-    logger.info(f"Converted post {id} to HTML: {filename}")
+    logger.info(f"Converted post {id} to HTML: {html_filename}")
 
-    return filename
+    os.remove(semaphore)
+
+    return html_filename
 
 
 def to_utc_str(dt_str: str) -> str:
@@ -254,6 +279,40 @@ def to_utc_str(dt_str: str) -> str:
         return None
 
 
+def create_navigation_links(posts: List) -> Dict:
+    """
+    Creates backwards and forwards navigation links for the posts.
+
+    Args:
+        posts (list): A list of Blogger posts.
+    Returns:
+        dict: A dictionary containing the navigation links for each post.
+    """
+    fallback_url = "../index.html"
+    post_count = len(posts)
+
+    navigation = {}
+    for i, post in enumerate(posts):
+        if i > 0:
+            previous_post_id = posts[i - 1]["id"]
+            previous_url = f"../{previous_post_id}/{previous_post_id}.html"
+        else:
+            previous_url = fallback_url
+
+        if i < post_count-1:
+            next_post_id = posts[i + 1]["id"]
+            next_url = f"../{next_post_id}/{next_post_id}.html"
+        else:
+            next_url = fallback_url
+
+        navigation[post["id"]] = {
+            "previous": previous_url,
+            "next": next_url
+        }
+
+    return navigation
+
+
 def create_index_html(output_dir: str, blog: Dict, posts: List) -> str:
     """
     Creates an index HTML file listing all posts.
@@ -265,22 +324,36 @@ def create_index_html(output_dir: str, blog: Dict, posts: List) -> str:
     Returns:
         str: The path to the generated index HTML file.
     """
+
+    blog_name = blog.get("name", "Blogger Blog")
+    blog_url = blog.get("url", "#")
+    blog_post_count = blog["posts"]["totalItems"]
+    blog_export_count = len(posts) if FULL_EXPORT else POST_EXPORT_TEST_LIMIT
+    exported_on = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     index_html = f"""
 <html>
   <head>
-    <title>{blog['name']}</title>
+    <title>{blog_name}</title>
   </head>
   <body>
-    <h1>{blog['name']}</h1>
-    <p>Retrieved on: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
+    <h1>{blog_name}</h1>
+    <p><b>Total Posts:</b> {blog_post_count}</p>
+    <p><b>Exported on:</b> {exported_on}</p>
+    <p><a href="{blog_url}" target="_blank">View on Blogger</a></p>
     <ul>
 """
 
     for i, post in enumerate(posts):
-        index_html += f'      <li><a href="{post["id"]}/{post["id"]}.html">{post["title"]}</a></li>\n'
+        post_id = post.get("id")
+        post_title = post.get("title", "No Title")
+        post_published = to_utc_str(post.get("published", "Unknown Date"))
 
-    index_html += """
+        index_html += f'      <li>{post_published} &ndash; <a href="{post_id}/{post_id}.html">{post_title}</a></li>\n'
+
+    index_html += f"""
     </ul>
+    <p><b>Exported Posts:</b> {blog_export_count}</p>
   </body>
 </html>
 """
@@ -296,15 +369,18 @@ def create_index_html(output_dir: str, blog: Dict, posts: List) -> str:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Export Blogger posts to HTML.")
     parser.add_argument("blog_id", help="The Blogger blog ID to export")
-    parser.add_argument("--full", help="Export all posts in the blog")
+    parser.add_argument("--full", action="store_true",  help="Export all posts in the blog")
+    parser.add_argument("--clean", action="store_true", help="Clean the output directory before export")
     args = parser.parse_args()
 
     BLOG_ID = args.blog_id
     FULL_EXPORT = args.full
+    CLEAN_OUTPUT = args.clean
 
     if not FULL_EXPORT:
         logger.setLevel(logging.DEBUG)
         logger.debug(f"Running in testing mode, limiting to {POST_EXPORT_TEST_LIMIT} posts.")
+        BASE_OUTPUT_DIR = BASE_OUTPUT_DIR + "_test"
 
     credentials = get_credentials()
 
@@ -314,14 +390,20 @@ if __name__ == "__main__":
     posts = get_blogger_posts(BLOG_ID, credentials, limit=POST_EXPORT_TEST_LIMIT if not FULL_EXPORT else None)
     logger.info(f"Retrieved {len(posts)} posts.")
 
-    output_dir = os.path.join("blogs", BLOG_ID)
-    shutil.rmtree(output_dir, ignore_errors=True)
+    output_dir = os.path.join(BASE_OUTPUT_DIR, BLOG_ID)
+    logger.info(f"Output directory: {output_dir}")
+
+    if not FULL_EXPORT or CLEAN_OUTPUT:
+        logger.info("Deleting output directory before export.")
+        shutil.rmtree(output_dir, ignore_errors=True)
+
     os.makedirs(output_dir, exist_ok=True)
 
     create_index_html(output_dir, blog, posts)
+    navigation = create_navigation_links(posts)
 
     for i, post in enumerate(posts):
-        convert_post_to_html(output_dir, post)
+        convert_post_to_html(output_dir, navigation, post)
 
     logger.info("Conversion completed successfully.")
     logger.info(f"Open the {output_dir}\\index.html file to view the exported posts.")
