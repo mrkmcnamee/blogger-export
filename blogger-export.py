@@ -127,7 +127,7 @@ class ContentHTMLParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         self.data += f'<{tag}'
         for attr, value in attrs:
-            if value.startswith("https://blogger.googleusercontent.com"):
+            if value and value.startswith("https://blogger.googleusercontent.com"):
                 if attr == 'href':
                     self.image_index += 1
                     self.data += f' {attr}="{self._handle_user_content(value, "full", self.image_index)}"'
@@ -209,7 +209,7 @@ def convert_post_to_html(output_dir: str, navigation: Dict, post: Dict) -> str:
     semaphore = os.path.join(post_output_dir, "semaphore.txt")
 
     if os.path.exists(semaphore):
-        logger.warning("Incomplete post conversion detected, cleaning up.")
+        logger.warning(f"Incomplete conversion of post {id} detected, cleaning up.")
         shutil.rmtree(post_output_dir, ignore_errors=True)
 
     try:
