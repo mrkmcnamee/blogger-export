@@ -17,10 +17,10 @@ BASE_OUTPUT_DIR = "blogs"
 POST_EXPORT_TEST_LIMIT = 10
 SCOPES = ["https://www.googleapis.com/auth/blogger"]
 
-handler = logging.StreamHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logger = logging.getLogger(__name__)
-logger.addHandler(handler)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(stream_handler)
 logger.propagate = False
 logger.setLevel(logging.INFO)
 
@@ -384,12 +384,6 @@ if __name__ == "__main__":
 
     credentials = get_credentials()
 
-    blog = get_blogger_blog(BLOG_ID, credentials)
-    logger.info(f"Processing blog: {blog['name']} (ID: {blog['id']})")
-
-    posts = get_blogger_posts(BLOG_ID, credentials, limit=POST_EXPORT_TEST_LIMIT if not FULL_EXPORT else None)
-    logger.info(f"Retrieved {len(posts)} posts.")
-
     output_dir = os.path.join(BASE_OUTPUT_DIR, BLOG_ID)
     logger.info(f"Output directory: {output_dir}")
 
@@ -399,11 +393,24 @@ if __name__ == "__main__":
 
     os.makedirs(output_dir, exist_ok=True)
 
-    create_index_html(output_dir, blog, posts)
+    log_filename = f"blogger_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    log_file = os.path.join(output_dir, log_filename)
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+
+    blog = get_blogger_blog(BLOG_ID, credentials)
+    logger.info(f"Processing blog: {blog['name']} (ID: {blog['id']})")
+
+    posts = get_blogger_posts(BLOG_ID, credentials, limit=POST_EXPORT_TEST_LIMIT if not FULL_EXPORT else None)
+    logger.info(f"Retrieved {len(posts)} posts.")
+
+    index_html = create_index_html(output_dir, blog, posts)
     navigation = create_navigation_links(posts)
 
     for i, post in enumerate(posts):
         convert_post_to_html(output_dir, navigation, post)
 
     logger.info("Conversion completed successfully.")
-    logger.info(f"Open the {output_dir}\\index.html file to view the exported posts.")
+    logger.info(f"Log file: {log_file}")
+    logger.info(f"Open the {index_html} file to view the exported posts.")

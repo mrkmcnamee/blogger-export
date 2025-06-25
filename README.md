@@ -1,5 +1,8 @@
 # Blogger export
 
+A script to export an entire blog from [Blogger](https://www.blogger.com) to a simple HTML structure that can be
+navigated in a browser. Images are downloaded as well. Includes a test mode and resume functionality.
+
 ## Getting started
 
 1. Follow the instructions in [Blogger API](https://developers.google.com/blogger) for getting OAuth credentials.
@@ -50,7 +53,7 @@
     python .\blogger-export.py <Blog ID> --full
     ```
 
-2. Open the index file again in the browser to see the results.
+2. Open the index file again in the browser to see the results. This can be done while the export is running.
 
 3. To re-run the full export:
 
