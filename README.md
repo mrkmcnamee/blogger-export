@@ -28,7 +28,17 @@ navigated in a browser. Images are downloaded as well. Includes a test mode and 
 
 3. Install [Python](https://www.python.org/downloads/).
 
-4. Install [GitHub Desktop](https://desktop.github.com/download/) and checkout this repository.
+4. Install [Poetry](https://python-poetry.org/docs/) and use it to install the project dependencies:
+
+    ```shell
+    pipx install poetry
+
+    poetry lock
+
+    poetry install
+    ```
+
+5. Install [GitHub Desktop](https://desktop.github.com/download/) and checkout this repository.
 
 ## Performing a test run
 
